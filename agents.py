@@ -1,94 +1,116 @@
 import os
 import datetime
 from crewai import Agent, Task, Crew, Process, LLM
+from crewai_tools import FileReadTool, FileWriterTool, DirectoryReadTool
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # --- CONFIGURATION ---
-os.environ["OPENAI_API_KEY"] = "NA" # Bypass OpenAI checks
+os.environ["OPENAI_API_KEY"] = "NA" 
 
-# 1. Setup Brain (Gemini 2.5 Flash)
-# Note: "gemini-2.5-flash" is the latest. If it fails, fallback to "gemini-2.0-flash".
-my_llm = LLM(
-    model="gemini/gemini-2.5-flash",
-    api_key=os.getenv("GOOGLE_API_KEY")
+# 1. SETUP BRAINS (The Hybrid Engine)
+
+# BRAIN A: The "Thinker" (For Planning & Logic)
+# Uses the powerful 2.5 Pro model for complex reasoning
+smart_llm = LLM(
+    model="gemini/gemini-2.5-pro",
+    api_key=os.getenv("GOOGLE_API_KEY"),
+    temperature=0.2
 )
 
-# 2. Load the Rules
+# BRAIN B: The "Doer" (For Speed & Volume)
+# Uses the 2.5 Flash model for fast coding
+fast_llm = LLM(
+    model="gemini/gemini-2.5-flash",
+    api_key=os.getenv("GOOGLE_API_KEY"),
+    temperature=0.1
+)
+
+# 2. Setup Tools (The Hands & Eyes)
+# These allow agents to interact with your actual hard drive.
+file_read_tool = FileReadTool()
+file_write_tool = FileWriterTool()
+directory_tool = DirectoryReadTool(directory='./') # Scans current folder
+
+# 3. Load Rules
 def load_global_rules():
     try:
         with open("global_rules.md", "r") as file:
             return file.read()
     except:
-        return "STRICT MODE: Follow user instructions exactly. No filler."
+        return "STRICT MODE: Follow user instructions exactly."
 
 rules = load_global_rules()
 
-# 3. Define The Agents
+# 4. Define The Agents
 
-# Agent A: The Architect (Planner)
+# Agent A: The Architect (Now sees the folder structure)
 architect = Agent(
     role='Chief Architect',
-    goal='Plan strictly according to user constraints.',
-    backstory=f"You are the guardian of the requirements. You ensure no rule is broken.\nRULES:\n{rules}",
-    llm=my_llm,
+    goal='Analyze project structure and plan features.',
+    backstory=f"You scan the folder structure first. You ensure new files fit the existing architecture.\nRULES:\n{rules}",
+    llm=smart_llm,
+    tools=[directory_tool, file_read_tool], # Can see folders
     verbose=True
 )
 
-# Agent B: The Lead Engineer (Coder)
+# Agent B: The Lead Engineer (Now writes files)
 lead_dev = Agent(
     role='Lead Engineer',
-    goal='Write production-ready, SEO-optimized code.',
-    backstory=f"You write the actual code. You favor Full Code rewrites for clarity.\nRULES:\n{rules}",
-    llm=my_llm,
+    goal='Write code and SAVE it to the file system.',
+    backstory=f"You are authorized to WRITE code to files. Always create a backup before overwriting.\nRULES:\n{rules}",
+    llm=fast_llm,
+    tools=[file_read_tool, file_write_tool], # Can write files
     verbose=True
 )
 
-# Agent C: The Debugger (NEW!)
+# Agent C: The Debugger
 debugger = Agent(
     role='Senior Debugger',
-    goal='Identify bugs, security risks, and logic errors.',
-    backstory=f"You are a pessimist. You look for what will break. You analyze the code for SEO and Security flaws.\nRULES:\n{rules}",
-    llm=my_llm,
+    goal='Read files, find bugs, and propose fixes.',
+    backstory=f"You read the actual file content to find logical errors.\nRULES:\n{rules}",
+    llm=smart_llm,
+    tools=[file_read_tool], # Can read files
     verbose=True
 )
 
-# 4. execution Engine & Auto-Save
+# 5. Execution Engine
 def run_vexa_crew(user_request, project_mode="New Feature"):
     
-    # Define Tasks based on mode
     tasks = []
 
-    if project_mode == "Debugging / Fix":
-        # Debugging Workflow
-        debug_task = Task(
-            description=f"Analyze this code/request for errors: {user_request}. Find the bug.",
-            agent=debugger,
-            expected_output="Analysis of the bug and the specific fix logic."
-        )
-        fix_task = Task(
-            description="Apply the fix and provide the FULL corrected code file.",
+    if project_mode == "Direct File Edit (Trae Mode)":
+        # This mode gives the agent permission to edit files directly
+        edit_task = Task(
+            description=f"Request: {user_request}. \n1. READ the relevant file. \n2. WRITE the updated code directly to the file.",
             agent=lead_dev,
-            expected_output="The complete, fixed code file."
+            expected_output="Confirmation that file has been updated."
         )
-        tasks = [debug_task, fix_task]
+        tasks = [edit_task]
+
+    elif project_mode == "Debugging / Fix":
+        debug_task = Task(
+            description=f"Analyze this request: {user_request}. Read the files in the directory to find the issue.",
+            agent=debugger,
+            expected_output="Analysis of the bug."
+        )
+        tasks = [debug_task]
     
     else:
-        # Normal Feature Workflow
+        # Standard Plan -> Code mode
         plan_task = Task(
-            description=f"Request: {user_request}. Create a strict technical plan.",
+            description=f"Request: {user_request}. Scan the directory to understand the current structure first.",
             agent=architect,
             expected_output="Technical Roadmap."
         )
         code_task = Task(
-            description="Write the FULL code based on the plan. Ensure SEO and Security compliance.",
+            description="Write the FULL code. If the user asked to save it, use the FileWriteTool.",
             agent=lead_dev,
             expected_output="Complete source code."
         )
         tasks = [plan_task, code_task]
 
-    # Run Crew
     vexa_crew = Crew(
         agents=[architect, lead_dev, debugger],
         tasks=tasks,
@@ -97,14 +119,11 @@ def run_vexa_crew(user_request, project_mode="New Feature"):
     
     result = vexa_crew.kickoff()
 
-    # --- AUTO SAVE HISTORY ---
-    # This saves every interaction to a file so you don't lose it.
+    # Auto-Save Log
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
     filename = f"history/log_{timestamp}.md"
-    
     os.makedirs("history", exist_ok=True)
     with open(filename, "w", encoding="utf-8") as f:
-        f.write(f"# Request: {user_request}\n\n")
-        f.write(str(result))
+        f.write(f"# Request: {user_request}\n\n{str(result)}")
     
     return str(result)
