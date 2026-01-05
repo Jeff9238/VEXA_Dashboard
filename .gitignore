@@ -1,0 +1,25 @@
+Security: Never upload secrets
+
+.env
+
+Python: Ignore compiled files
+
+pycache/
+*.py[cod]
+
+Environments
+
+venv/
+env/
+.venv/
+
+VEXA Dashboard Specific
+
+(Optional) Ignore local chat history if you want privacy
+
+history/
+
+OS Junk files
+
+.DS_Store
+Thumbs.db
