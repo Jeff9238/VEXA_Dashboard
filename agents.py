@@ -9,105 +9,114 @@ load_dotenv()
 # --- CONFIGURATION ---
 os.environ["OPENAI_API_KEY"] = "NA" 
 
-# 1. SETUP BRAINS (The Hybrid Engine)
-
-# BRAIN A: The "Thinker" (For Planning & Logic)
-# Uses the powerful 2.5 Pro model for complex reasoning
+# 1. SETUP BRAINS (Hybrid Engine 2.5)
+# The "Thinker" - Logic & Planning
 smart_llm = LLM(
     model="gemini/gemini-2.5-pro",
     api_key=os.getenv("GOOGLE_API_KEY"),
     temperature=0.2
 )
 
-# BRAIN B: The "Doer" (For Speed & Volume)
-# Uses the 2.5 Flash model for fast coding
+# The "Doer" - Speed & Coding
 fast_llm = LLM(
     model="gemini/gemini-2.5-flash",
     api_key=os.getenv("GOOGLE_API_KEY"),
     temperature=0.1
 )
 
-# 2. Setup Tools (The Hands & Eyes)
-# These allow agents to interact with your actual hard drive.
+# 2. SETUP TOOLS (With Safety Rails)
 file_read_tool = FileReadTool()
 file_write_tool = FileWriterTool()
-directory_tool = DirectoryReadTool(directory='./') # Scans current folder
+# We force the directory tool to prefer looking at a 'project' subfolder if possible, 
+# but for now, we rely on the Prompt Rules to avoid app.py
+directory_tool = DirectoryReadTool(directory='./') 
 
-# 3. Load Rules
+# 3. LOAD RULES
 def load_global_rules():
     try:
         with open("global_rules.md", "r") as file:
             return file.read()
     except:
-        return "STRICT MODE: Follow user instructions exactly."
+        return "STRICT MODE: Do not edit app.py or agents.py."
 
 rules = load_global_rules()
 
-# 4. Define The Agents
+# 4. DEFINE AGENTS
 
-# Agent A: The Architect (Now sees the folder structure)
+# Agent A: The Architect (Smart Brain)
 architect = Agent(
     role='Chief Architect',
-    goal='Analyze project structure and plan features.',
-    backstory=f"You scan the folder structure first. You ensure new files fit the existing architecture.\nRULES:\n{rules}",
-    llm=smart_llm,
-    tools=[directory_tool, file_read_tool], # Can see folders
+    goal='Plan the project steps and folder structure.',
+    backstory=f"""You represent the 'Step-by-Step' guide. You never write code immediately. 
+    You first tell the user what needs to be installed and created.
+    CRITICAL: YOU MUST IGNORE 'app.py' and 'agents.py'. They are system files.
+    RULES:\n{rules}""",
+    llm=fast_llm, 
+    tools=[directory_tool, file_read_tool],
     verbose=True
 )
 
-# Agent B: The Lead Engineer (Now writes files)
+# Agent B: The Lead Engineer (Fast Brain)
 lead_dev = Agent(
     role='Lead Engineer',
-    goal='Write code and SAVE it to the file system.',
-    backstory=f"You are authorized to WRITE code to files. Always create a backup before overwriting.\nRULES:\n{rules}",
-    llm=fast_llm,
-    tools=[file_read_tool, file_write_tool], # Can write files
+    goal='Write production code and implement the plan.',
+    backstory=f"""You write the actual code files. 
+    You present code clearly for the 'Canvas' view.
+    CRITICAL: NEVER EDIT 'app.py'. If asked to 'update the app', update the USER'S project files.
+    RULES:\n{rules}""",
+    llm=fast_llm, 
+    tools=[file_read_tool, file_write_tool],
     verbose=True
 )
 
-# Agent C: The Debugger
+# Agent C: The Debugger (Smart Brain)
 debugger = Agent(
     role='Senior Debugger',
-    goal='Read files, find bugs, and propose fixes.',
-    backstory=f"You read the actual file content to find logical errors.\nRULES:\n{rules}",
-    llm=smart_llm,
-    tools=[file_read_tool], # Can read files
+    goal='Analyze code for security and logic flaws.',
+    backstory=f"""You check for bugs and security risks. 
+    You ensure the user follows the installation steps.
+    RULES:\n{rules}""",
+    llm=fast_llm, 
+    tools=[file_read_tool],
     verbose=True
 )
 
-# 5. Execution Engine
+# 5. EXECUTION ENGINE
 def run_vexa_crew(user_request, project_mode="New Feature"):
     
     tasks = []
 
+    # SAFETY CHECK IN PROMPT
+    safety_instruction = "\n(REMINDER: Do not edit or analyze 'app.py' or 'agents.py'. Work on target project files only.)"
+    full_request = user_request + safety_instruction
+
     if project_mode == "Direct File Edit (Trae Mode)":
-        # This mode gives the agent permission to edit files directly
         edit_task = Task(
-            description=f"Request: {user_request}. \n1. READ the relevant file. \n2. WRITE the updated code directly to the file.",
+            description=f"Request: {full_request}. \n1. Read the target file. \n2. Apply changes. \n3. CONFIRM you did not touch app.py.",
             agent=lead_dev,
-            expected_output="Confirmation that file has been updated."
+            expected_output="Confirmation of modified files."
         )
         tasks = [edit_task]
 
     elif project_mode == "Debugging / Fix":
         debug_task = Task(
-            description=f"Analyze this request: {user_request}. Read the files in the directory to find the issue.",
+            description=f"Analyze: {full_request}. Provide a fix guide and the corrected code.",
             agent=debugger,
-            expected_output="Analysis of the bug."
+            expected_output="Step-by-step fix guide + Code blocks."
         )
         tasks = [debug_task]
     
     else:
-        # Standard Plan -> Code mode
+        # Standard Plan -> Code
         plan_task = Task(
-            description=f"Request: {user_request}. Scan the directory to understand the current structure first.",
+            description=f"Request: {full_request}. \nCreate a Step-by-Step Implementation Guide (commands, folders, files).",
             agent=architect,
-            expected_output="Technical Roadmap."
+            expected_output="Markdown Guide with Shell commands."
         )
         code_task = Task(
-            description="Write the FULL code. If the user asked to save it, use the FileWriteTool.",
+            description="Based on the guide, write the FULL code files. Use clear file paths.",
             agent=lead_dev,
-            expected_output="Complete source code."
+            expected_output="Markdown Code Blocks."
         )
         tasks = [plan_task, code_task]
 
@@ -119,11 +128,10 @@ def run_vexa_crew(user_request, project_mode="New Feature"):
     
     result = vexa_crew.kickoff()
 
-    # Auto-Save Log
+    # Save Log
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
-    filename = f"history/log_{timestamp}.md"
     os.makedirs("history", exist_ok=True)
-    with open(filename, "w", encoding="utf-8") as f:
+    with open(f"history/log_{timestamp}.md", "w", encoding="utf-8") as f:
         f.write(f"# Request: {user_request}\n\n{str(result)}")
     
     return str(result)
